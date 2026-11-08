@@ -19,11 +19,13 @@ llm = ChatGoogleGenerativeAI(model="gemini-3.6-flash", google_api_key=os.getenv(
 class ExtractedDetails(BaseModel):
     city: str = Field(description="The destination city specified by the user.")
     budget_level: str = Field(description="The budget preference (e.g., budget, moderate, luxury).", default="moderate")
+    specific_food_dish: Optional[str] = Field(description="Specific food, dish, or cuisine requested by the user (e.g., biryani, nihari, pizza).", default=None)
 
 
 class PlaceDecideState(MessagesState):
     city: str
     budget_level: str
+    specific_food_dish: Optional[str]
     weather_data: str
     tourist_data: List[str]
     budget_data: str
@@ -33,13 +35,14 @@ class PlaceDecideState(MessagesState):
 
 
 def input_analyzer_node(state: PlaceDecideState):
-    """Analyzes the user message to extract destination city and budget preferences."""
+    """Analyzes the user message to extract destination city, budget preferences, and specific food requests."""
     structured_llm = llm.with_structured_output(ExtractedDetails)
-    system_prompt = SystemMessage(content="Extract the travel destination city and budget preference from the user message.")
+    system_prompt = SystemMessage(content="Extract the travel destination city, budget preference, and any specific food or dish requested by the user (e.g., biryani, nihari, etc.).")
     extracted = structured_llm.invoke([system_prompt] + state["messages"])
     return {
         "city": extracted.city,
-        "budget_level": extracted.budget_level
+        "budget_level": extracted.budget_level,
+        "specific_food_dish": extracted.specific_food_dish
     }
 
 
@@ -91,8 +94,25 @@ def accommodation_info_node(state: PlaceDecideState):
 
 
 def cuisine_info_node(state: PlaceDecideState):
-    """Recommends local foods and dining experiences."""
+    """Recommends local foods and specific places/restaurants known for requested food or dishes."""
     city = state.get("city", "Multan")
+    specific_food = state.get("specific_food_dish")
+    
+    if specific_food:
+        query = f"Best places and famous restaurants to eat {specific_food} in {city}"
+        if tavily_api:
+            tavily_search = TavilySearchResults(api_key=tavily_api, max_results=3)
+            result = tavily_search.invoke({"query": query})
+            food_results = []
+            for idx, item in enumerate(result):
+                food_results.append(f"{idx+1}. {item['title']}: {item['content']}")
+            search_context = "\n".join(food_results)
+            res = llm.invoke([HumanMessage(content=f"Recommend the best spots to eat {specific_food} in {city} based on search info:\n{search_context}")])
+            return {"cuisine_data": res.content}
+        else:
+            res = llm.invoke([HumanMessage(content=f"Recommend the top-rated restaurants and places in {city} known specifically for serving the best {specific_food}.")])
+            return {"cuisine_data": res.content}
+            
     res = llm.invoke([HumanMessage(content=f"Recommend famous local foods, dishes, and dining spots in {city}.")])
     return {"cuisine_data": res.content}
 
@@ -100,6 +120,7 @@ def cuisine_info_node(state: PlaceDecideState):
 def final_itinerary_node(state: PlaceDecideState):
     """Aggregates outputs into a comprehensive final travel itinerary speaking in Siraiki (Roman English)."""
     city = state.get("city", "Multan")
+    specific_food = state.get("specific_food_dish", "")
     weather = state.get("weather_data", "")
     tourist = "\n".join(state.get("tourist_data", []))
     budget = state.get("budget_data", "")
@@ -108,18 +129,20 @@ def final_itinerary_node(state: PlaceDecideState):
 
     system_prompt = (
         "You are an expert travel assistant. Synthesize all information (weather, tourist spots, budget, "
-        "accommodations, and cuisine) into a comprehensive travel recommendation and day itinerary. "
+        "accommodations, and cuisine/food spot recommendations) into a comprehensive travel recommendation and day itinerary. "
+        "If a specific dish or food item was requested, make sure to highlight places offering the best version of that food. "
         "Talk in Siraiki language using Roman English script."
     )
 
     content = f"""
 City: {city}
+Requested Food/Dish: {specific_food if specific_food else "N/A"}
 Weather Info: {weather}
 Tourist Attractions:
 {tourist}
 Budget Details: {budget}
 Accommodations: {accommodation}
-Local Cuisine: {cuisine}
+Local Cuisine & Special Food Places: {cuisine}
 """
     response = llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=content)])
     return {
