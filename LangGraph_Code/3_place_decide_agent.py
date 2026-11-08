@@ -19,27 +19,35 @@ llm = ChatGoogleGenerativeAI(model="gemini-3.6-flash", google_api_key=os.getenv(
 class ExtractedDetails(BaseModel):
     city: str = Field(description="The destination city specified by the user.")
     budget_level: str = Field(description="The budget preference (e.g., budget, moderate, luxury).", default="moderate")
+    travel_mode: Optional[str] = Field(description="Preferred transportation mode or commuting style.", default="public transit")
+    packing_or_accessibility_needs: Optional[str] = Field(description="Special packing, health, or accessibility needs specified by the user.", default="standard")
 
 
 class PlaceDecideState(MessagesState):
     city: str
     budget_level: str
+    travel_mode: str
+    packing_or_accessibility_needs: str
     weather_data: str
     tourist_data: List[str]
     budget_data: str
     accommodation_data: str
     cuisine_data: str
+    transport_info: str
+    safety_and_packing_info: str
     final_itinerary: str
 
 
 def input_analyzer_node(state: PlaceDecideState):
     """Analyzes the user message to extract destination city and budget preferences."""
     structured_llm = llm.with_structured_output(ExtractedDetails)
-    system_prompt = SystemMessage(content="Extract the travel destination city and budget preference from the user message.")
+    system_prompt = SystemMessage(content="Extract the travel destination city, budget preference, travel mode, and packing/accessibility needs from the user message.")
     extracted = structured_llm.invoke([system_prompt] + state["messages"])
     return {
         "city": extracted.city,
-        "budget_level": extracted.budget_level
+        "budget_level": extracted.budget_level,
+        "travel_mode": extracted.travel_mode or "public transit",
+        "packing_or_accessibility_needs": extracted.packing_or_accessibility_needs or "standard"
     }
 
 
@@ -97,6 +105,23 @@ def cuisine_info_node(state: PlaceDecideState):
     return {"cuisine_data": res.content}
 
 
+def transport_info_node(state: PlaceDecideState):
+    """Provides local transit options, travel modes, and commuting advice."""
+    city = state.get("city", "Multan")
+    travel_mode = state.get("travel_mode", "public transit")
+    res = llm.invoke([HumanMessage(content=f"Provide local transportation options, airport/train connections, and commuting advice for visiting {city} with a preference for {travel_mode}.")])
+    return {"transport_info": res.content}
+
+
+def safety_and_packing_info_node(state: PlaceDecideState):
+    """Provides safety guidelines, local customs, visa/entry considerations, and packing checklist."""
+    city = state.get("city", "Multan")
+    weather = state.get("weather_data", "")
+    needs = state.get("packing_or_accessibility_needs", "standard")
+    res = llm.invoke([HumanMessage(content=f"Provide essential safety tips, local customs/etiquette, visa considerations, and a packing list for {city} considering weather context ({weather}) and special needs ({needs}).")])
+    return {"safety_and_packing_info": res.content}
+
+
 def final_itinerary_node(state: PlaceDecideState):
     """Aggregates outputs into a comprehensive final travel itinerary speaking in Siraiki (Roman English)."""
     city = state.get("city", "Multan")
@@ -105,10 +130,12 @@ def final_itinerary_node(state: PlaceDecideState):
     budget = state.get("budget_data", "")
     accommodation = state.get("accommodation_data", "")
     cuisine = state.get("cuisine_data", "")
+    transport = state.get("transport_info", "")
+    safety_packing = state.get("safety_and_packing_info", "")
 
     system_prompt = (
         "You are an expert travel assistant. Synthesize all information (weather, tourist spots, budget, "
-        "accommodations, and cuisine) into a comprehensive travel recommendation and day itinerary. "
+        "accommodations, cuisine, transportation & getting around, safety & culture & packing checklist) into a comprehensive travel recommendation and day itinerary. "
         "Talk in Siraiki language using Roman English script."
     )
 
@@ -120,6 +147,8 @@ Tourist Attractions:
 Budget Details: {budget}
 Accommodations: {accommodation}
 Local Cuisine: {cuisine}
+Transportation & Getting Around: {transport}
+Safety, Culture & Packing Checklist: {safety_packing}
 """
     response = llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=content)])
     return {
@@ -135,7 +164,9 @@ def route_user_preference(state: PlaceDecideState) -> List[str]:
         "tourist_info_node",
         "budget_info_node",
         "accommodation_info_node",
-        "cuisine_info_node"
+        "cuisine_info_node",
+        "transport_info_node",
+        "safety_and_packing_info_node"
     ]
 
 
@@ -148,6 +179,8 @@ graph.add_node("tourist_info_node", tourist_info_node)
 graph.add_node("budget_info_node", budget_info_node)
 graph.add_node("accommodation_info_node", accommodation_info_node)
 graph.add_node("cuisine_info_node", cuisine_info_node)
+graph.add_node("transport_info_node", transport_info_node)
+graph.add_node("safety_and_packing_info_node", safety_and_packing_info_node)
 graph.add_node("final_itinerary_node", final_itinerary_node)
 
 graph.add_edge(START, "input_analyzer_node")
@@ -159,6 +192,8 @@ graph.add_edge("tourist_info_node", "final_itinerary_node")
 graph.add_edge("budget_info_node", "final_itinerary_node")
 graph.add_edge("accommodation_info_node", "final_itinerary_node")
 graph.add_edge("cuisine_info_node", "final_itinerary_node")
+graph.add_edge("transport_info_node", "final_itinerary_node")
+graph.add_edge("safety_and_packing_info_node", "final_itinerary_node")
 
 graph.add_edge("final_itinerary_node", END)
 
